@@ -2,7 +2,7 @@
 setlocal
 echo =====================================================================
 echo  SURAKSHA AI - Women Safety & Emergency Response Platform
-echo  Starting Local Full-Stack Development Servers...
+echo  Starting Unified Single-Port Server on Port 5173...
 echo =====================================================================
 echo.
 

@@ -77,8 +77,20 @@ app.include_router(notifications.router, prefix=api_prefix)
 app.include_router(ai.router, prefix=api_prefix)
 app.include_router(system.router)  # includes /health, /ready, /api/demo/seed
 
-@app.get("/")
-def root():
+# ------------------------------------------------------------------------------
+# Frontend SPA & Static Assets (Unified Single-Port Hosting)
+# ------------------------------------------------------------------------------
+import os
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+# Locate frontend/dist
+current_file_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_file_dir, "..", ".."))
+frontend_dist = os.path.join(project_root, "frontend", "dist")
+
+@app.get("/api/info")
+def platform_info():
     return {
         "platform": settings.PROJECT_NAME,
         "version": settings.VERSION,
@@ -86,3 +98,42 @@ def root():
         "health_check": "/health",
         "demo_mode": settings.DEMO_MODE
     }
+
+# Mount static assets if dist/assets exists
+assets_dir = os.path.join(frontend_dist, "assets")
+if os.path.exists(assets_dir):
+    app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+# Root endpoint: serve frontend SPA index.html if available, else API info
+@app.get("/")
+def root():
+    index_file = os.path.join(frontend_dist, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    return {
+        "platform": settings.PROJECT_NAME,
+        "version": settings.VERSION,
+        "docs_url": "/docs",
+        "health_check": "/health",
+        "demo_mode": settings.DEMO_MODE
+    }
+
+# SPA catch-all for client-side routing
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    # Exclude API and system routes from SPA fallback
+    api_prefixes = ("api", "health", "ready", "docs", "openapi.json", "redoc")
+    if any(full_path == prefix or full_path.startswith(f"{prefix}/") for prefix in api_prefixes):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+
+    # Check for direct static file in dist (e.g. favicon.ico, vite.svg)
+    file_path = os.path.join(frontend_dist, full_path)
+    if full_path and os.path.exists(file_path) and os.path.isfile(file_path):
+        return FileResponse(file_path)
+
+    # Return index.html for React Router to handle
+    index_file = os.path.join(frontend_dist, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+
+    return JSONResponse(status_code=404, content={"detail": "Frontend build not found"})
