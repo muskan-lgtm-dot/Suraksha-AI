@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: suraksha_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: suraksha_db
+      POSTGRES_USER: suraksha_user
+      POSTGRES_PASSWORD: suraksha_secure_password_2026
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U suraksha_user -d suraksha_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: suraksha_backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://suraksha_user:suraksha_secure_password_2026@db:5432/suraksha_db
+      APP_ENV: production
+      SECRET_KEY: change-this-in-real-production-secret-suraksha-key-2026
+      DEMO_MODE: "true"
+      NATIONAL_EMERGENCY_NUMBER: "112"
+      SMS_PROVIDER: "mock"
+      EMAIL_PROVIDER: "mock"
+      AI_PROVIDER: "rule_based"
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: suraksha_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  pgdata:
