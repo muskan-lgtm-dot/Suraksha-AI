@@ -1,35 +1,47 @@
 import os
+import sys
 import tempfile
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 from app.core.config import settings
 
-# Handle postgres:// vs postgresql:// compatibility (e.g. Supabase, Neon, Railway)
+# ── normalise URL ─────────────────────────────────────────────────────────────
 db_url = settings.DATABASE_URL
+
+# Heroku / Railway / Supabase use postgres:// — SQLAlchemy needs postgresql://
 if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 
-# Ensure directory exists for SQLite
-if db_url.startswith("sqlite:////"):
-    filepath = db_url[len("sqlite:////"):]
-    if os.name == "nt" and filepath.startswith("tmp/"):
-        filepath = os.path.join(tempfile.gettempdir(), filepath[len("tmp/"):])
-        db_url = f"sqlite:///{filepath.replace(os.sep, '/')}"
-    parent_dir = os.path.dirname(filepath)
-    if parent_dir:
-        os.makedirs(parent_dir, exist_ok=True)
+# On Windows the /tmp path in the SQLite URL doesn't exist;
+# redirect it to the real temp directory so local testing works.
+if db_url.startswith("sqlite:////tmp/"):
+    filename = db_url[len("sqlite:////tmp/"):]
+    if sys.platform == "win32" and not os.path.isdir("/tmp"):
+        tmp = tempfile.gettempdir()
+        db_url = f"sqlite:///{os.path.join(tmp, filename)}"
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(os.path.join(tmp, filename)), exist_ok=True)
 
-# For SQLite, check_same_thread=False is needed for multi-threaded requests in FastAPI
-connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
+# For relative SQLite paths ensure the parent dir exists
+if db_url.startswith("sqlite:///") and not db_url.startswith("sqlite:////"):
+    rel = db_url[len("sqlite:///"):]
+    if rel:
+        parent = os.path.dirname(rel)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+# ── engine ────────────────────────────────────────────────────────────────────
+connect_args = {"check_same_thread": False} if "sqlite" in db_url else {}
 
 engine = create_engine(
     db_url,
     connect_args=connect_args,
-    pool_pre_ping=True
+    pool_pre_ping=True,
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+
 
 def get_db():
     db = SessionLocal()
