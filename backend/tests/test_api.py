@@ -1,15 +1,23 @@
+import os
+os.environ["APP_ENV"] = "test"
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 import app.models
+from app.core.config import settings
+settings.APP_ENV = "test"
 from app.main import app
 from app.core.database import Base, get_db
-from app.core.config import settings
 
-# Test database in memory / temporary sqlite
-TEST_DATABASE_URL = "sqlite:///./test_suraksha.db"
-test_engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
+# In-memory test database with StaticPool so all connections share the same memory DB
+TEST_DATABASE_URL = "sqlite://"
+test_engine = create_engine(
+    TEST_DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    poolclass=StaticPool
+)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 Base.metadata.create_all(bind=test_engine)

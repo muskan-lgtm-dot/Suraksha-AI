@@ -13,3 +13,14 @@ if backend_dir not in sys.path:
 os.environ["VERCEL"] = "1"
 
 from app.main import app
+from app.core.database import engine, Base, SessionLocal
+from app.api.endpoints.system import seed_demo_data
+
+# Ensure database tables and demo seed exist on serverless cold starts
+try:
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    seed_demo_data(db)
+    db.close()
+except Exception as e:
+    print(f"Serverless DB init warning: {e}")
