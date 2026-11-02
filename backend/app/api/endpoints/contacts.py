@@ -52,6 +52,20 @@ def create_contact(
     log_audit(db, action="TRUSTED_CONTACT_ADDED", resource_type="contact", resource_id=contact.id, actor_user_id=current_user.id)
     return contact
 
+@router.get("/{contact_id}", response_model=TrustedContactOut)
+def get_contact(
+    contact_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    contact = db.query(TrustedContact).filter(
+        TrustedContact.id == contact_id,
+        TrustedContact.user_id == current_user.id
+    ).first()
+    if not contact:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contact not found")
+    return contact
+
 @router.patch("/{contact_id}", response_model=TrustedContactOut)
 def update_contact(
     contact_id: int,

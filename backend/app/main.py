@@ -1,8 +1,13 @@
 """
-SURAKSHA AI — FastAPI Application
-Single file that works in two modes:
-  • Local dev  — FastAPI serves both the API and the built React SPA on one port (5173)
-  • Vercel      — FastAPI serves only the API; Vercel CDN serves the static frontend
+SURAKSHA AI — Unified FastAPI Application
+==========================================
+Single process, single port. Works identically:
+  • Locally   → python start_dev.py (port 5173)
+  • Render    → uvicorn app.main:app (port from $PORT env var)
+  • Railway   → uvicorn app.main:app (port from $PORT env var)
+
+API routes live under /api/*
+Static frontend (React build) is served for everything else.
 """
 import os
 from contextlib import asynccontextmanager
@@ -16,51 +21,64 @@ from app.core.config import settings
 import app.models  # registers all ORM models with Base.metadata
 from app.core.database import engine, Base, SessionLocal
 from app.api.endpoints import (
-    auth,
-    profile,
-    contacts,
-    incidents,
-    location_shares,
-    reports,
-    admin,
-    checkins,
-    notifications,
-    ai,
-    system,
+    auth, profile, contacts, incidents,
+    location_shares, reports, admin,
+    checkins, notifications, ai, system,
 )
 from app.api.endpoints.system import seed_demo_data
 
-# ── startup / shutdown ────────────────────────────────────────────────────────
+# ── Static-file resolution ────────────────────────────────────────────────────
+# FRONTEND_DIST env var lets deployment platforms override the default path.
+# Default: two directories up from this file (backend/app/main.py) → project_root/frontend/dist
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_DIST = os.environ.get(
+    "FRONTEND_DIST",
+    os.path.abspath(os.path.join(_HERE, "..", "..", "frontend", "dist")),
+)
+_INDEX = os.path.join(_DIST, "index.html")
+
+# ── Startup / Shutdown ────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    # Initialise DB tables
+    # Create all DB tables (idempotent)
     Base.metadata.create_all(bind=engine)
+    print(f"[SURAKSHA] Database: {settings.DATABASE_URL[:40]}...")
 
-    # Seed demo accounts (idempotent)
+    # Seed demo accounts (idempotent — skips if already present)
     db = SessionLocal()
     try:
         seed_demo_data(db)
         db.commit()
+        print("[SURAKSHA] Demo seed: OK")
     except Exception as e:
         db.rollback()
-        print(f"[SURAKSHA] Demo seed warning: {e}")
+        print(f"[SURAKSHA] Demo seed warning (non-fatal): {e}")
     finally:
         db.close()
 
+    # Log frontend status
+    if os.path.isfile(_INDEX):
+        print(f"[SURAKSHA] Frontend: serving from {_DIST}")
+    else:
+        print(f"[SURAKSHA] Frontend: dist not found at {_DIST} — run build first")
+
     yield
+    print("[SURAKSHA] Shutdown complete.")
 
 
-# ── app factory ───────────────────────────────────────────────────────────────
+# ── App ───────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
     description="Production-Ready Women Safety & Emergency Response Platform API",
+    docs_url="/docs",
+    openapi_url="/openapi.json",
     lifespan=lifespan if settings.APP_ENV != "test" else None,
 )
 
-# CORS — allow all origins (the frontend calls /api/* on the same domain in prod)
+# CORS — same-origin in production (frontend and API share the same domain/port)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -69,67 +87,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global error handler — no stack-trace leakage in production
+# Global error handler — hide internal stack traces from clients
 @app.exception_handler(Exception)
 async def _global_error(request: Request, exc: Exception):
+    print(f"[SURAKSHA] Unhandled error on {request.url}: {exc}")
     return JSONResponse(
         status_code=500,
         content={"detail": "An unexpected error occurred. Please try again."},
     )
 
-# ── API routers ───────────────────────────────────────────────────────────────
+# ── API Routers ───────────────────────────────────────────────────────────────
 
-_api = settings.API_V1_STR   # "/api"
+_PREFIX = settings.API_V1_STR  # "/api"
 
-app.include_router(auth.router,                   prefix=_api)
-app.include_router(profile.router,                prefix=_api)
-app.include_router(contacts.router,               prefix=_api)
-app.include_router(incidents.router,              prefix=_api)
-app.include_router(location_shares.router,        prefix=_api)
-app.include_router(location_shares.public_router, prefix=_api)
-app.include_router(reports.router,                prefix=_api)
-app.include_router(admin.router,                  prefix=_api)
-app.include_router(checkins.router,               prefix=_api)
-app.include_router(notifications.router,          prefix=_api)
-app.include_router(ai.router,                     prefix=_api)
-app.include_router(system.router)   # /health  /ready  /api/demo/seed
-
-# ── platform info endpoint ────────────────────────────────────────────────────
+app.include_router(auth.router,                   prefix=_PREFIX)
+app.include_router(profile.router,                prefix=_PREFIX)
+app.include_router(contacts.router,               prefix=_PREFIX)
+app.include_router(incidents.router,              prefix=_PREFIX)
+app.include_router(location_shares.router,        prefix=_PREFIX)
+app.include_router(location_shares.public_router, prefix=_PREFIX)
+app.include_router(reports.router,                prefix=_PREFIX)
+app.include_router(admin.router,                  prefix=_PREFIX)
+app.include_router(checkins.router,               prefix=_PREFIX)
+app.include_router(notifications.router,          prefix=_PREFIX)
+app.include_router(ai.router,                     prefix=_PREFIX)
+app.include_router(system.router)   # mounts /health  /ready  /api/demo/seed
 
 @app.get("/api/info", tags=["System"])
 def platform_info():
     return {
         "platform": settings.PROJECT_NAME,
         "version": settings.VERSION,
-        "docs_url": "/docs",
-        "health_check": "/health",
+        "docs": "/docs",
+        "health": "/health",
         "demo_mode": settings.DEMO_MODE,
     }
 
-# ── SPA static file serving (LOCAL DEV only) ─────────────────────────────────
-# On Vercel the static frontend is served by the CDN, so this code is never
-# reached in production — but it works perfectly locally on port 5173.
+# ── Frontend Static File Serving ──────────────────────────────────────────────
+# Paths that must NEVER fall through to the SPA handler
+_SKIP = frozenset(("api", "health", "ready", "docs", "openapi.json", "redoc", "assets"))
 
-_here  = os.path.dirname(os.path.abspath(__file__))
-_root  = os.path.abspath(os.path.join(_here, "..", ".."))
-_DIST  = os.path.join(_root, "frontend", "dist")
-_INDEX = os.path.join(_DIST, "index.html")
-
-# Mount /assets (hashed JS/CSS bundles) if the build exists
-_assets = os.path.join(_DIST, "assets")
-if os.path.isdir(_assets):
-    app.mount("/assets", StaticFiles(directory=_assets), name="frontend-assets")
-
-_SPA_SKIP = ("api", "health", "ready", "docs", "openapi.json", "redoc", "assets")
+# Mount /assets (Vite hashed bundles) with StaticFiles for proper cache headers
+_assets_dir = os.path.join(_DIST, "assets")
+if os.path.isdir(_assets_dir):
+    app.mount("/assets", StaticFiles(directory=_assets_dir), name="vite-assets")
 
 
 @app.get("/", include_in_schema=False)
 def serve_root():
+    """Serve the React SPA index.html at root."""
     if os.path.isfile(_INDEX):
         return FileResponse(_INDEX, media_type="text/html")
+    # No build yet — return API info so the server is still useful
     return {
         "platform": settings.PROJECT_NAME,
         "version": settings.VERSION,
+        "status": "API running. Frontend not built yet — run the build command.",
         "docs": "/docs",
         "health": "/health",
     }
@@ -137,20 +150,29 @@ def serve_root():
 
 @app.get("/{full_path:path}", include_in_schema=False)
 async def serve_spa(full_path: str):
-    # Don't intercept real API / system paths
-    if any(full_path == p or full_path.startswith(f"{p}/") for p in _SPA_SKIP):
+    """
+    SPA catch-all:
+    - Real API/system prefixes → 404 (their routers handle them above)
+    - Known static files (favicon, robots.txt, etc.) → serve directly
+    - Everything else → index.html (React Router handles client-side)
+    """
+    top = full_path.split("/")[0]
+    if top in _SKIP:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
-    # Direct static file (favicon, robots.txt, manifest, etc.)
+    # Exact static file match (e.g. favicon.ico, vite.svg)
     candidate = os.path.join(_DIST, full_path)
     if full_path and os.path.isfile(candidate):
         return FileResponse(candidate)
 
-    # Any React Router path → return index.html
+    # All React Router paths (dashboard, emergency, contacts, etc.)
     if os.path.isfile(_INDEX):
         return FileResponse(_INDEX, media_type="text/html")
 
     return JSONResponse(
         status_code=503,
-        content={"detail": "Frontend not built. Run: npm --workspace=frontend run build"},
+        content={
+            "detail": "Frontend not built.",
+            "fix": "Run: cd frontend && npm install && npm run build",
+        },
     )

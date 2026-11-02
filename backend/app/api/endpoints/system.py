@@ -48,7 +48,7 @@ def seed_demo_data(db: Session = Depends(get_db)):
     Seeds safe, realistic fictional demo data for hackathon presentation.
     All data is clearly marked as DEMO.
     """
-    # 1. Create or update Demo User
+    # 1. Create or ensure Demo User
     demo_user = db.query(User).filter(User.email == "demo@suraksha.ai").first()
     if not demo_user:
         demo_user = User(
@@ -63,8 +63,14 @@ def seed_demo_data(db: Session = Depends(get_db)):
         db.add(demo_user)
         db.commit()
         db.refresh(demo_user)
+    else:
+        # Guarantee demo password matches DemoSafe#2026 and account is active
+        demo_user.password_hash = get_password_hash("DemoSafe#2026")
+        demo_user.is_active = True
+        db.commit()
+        db.refresh(demo_user)
 
-    # 2. Create or update Admin User
+    # 2. Create or ensure Admin User
     admin_user = db.query(User).filter(User.email == "admin@suraksha.ai").first()
     if not admin_user:
         admin_user = User(
@@ -77,6 +83,12 @@ def seed_demo_data(db: Session = Depends(get_db)):
             is_admin=True
         )
         db.add(admin_user)
+        db.commit()
+        db.refresh(admin_user)
+    else:
+        admin_user.password_hash = get_password_hash("AdminSafe#2026")
+        admin_user.is_active = True
+        admin_user.is_admin = True
         db.commit()
         db.refresh(admin_user)
 
